@@ -35,6 +35,8 @@ export interface Order {
     createdAt: string;
     takenAt: string | null;
     completedAt: string | null;
+    cancelledAt: string | null;
+    cancelReason: string | null;
     driverId: string | null;
     dispatcherId: string | null;
     driver?: Partial<Driver> | null;

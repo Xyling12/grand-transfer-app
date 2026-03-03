@@ -4,9 +4,11 @@ import {
     StyleSheet, RefreshControl, ActivityIndicator, Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { apiFetch } from '../../services/api';
 import { Colors, Spacing, Radius, FontSize } from '../../constants/Colors';
 import { translateTariff, translateStatus, statusColor, statusEmoji } from '../../utils/translations';
+import { formatDate } from '../../utils/dates';
 import type { Order } from '../../types';
 
 export default function HistoryScreen() {
@@ -28,6 +30,7 @@ export default function HistoryScreen() {
     }, []);
 
     useEffect(() => { fetchOrders(); }, [fetchOrders]);
+    useFocusEffect(useCallback(() => { fetchOrders(); }, [fetchOrders]));
     const onRefresh = () => { setRefreshing(true); fetchOrders(); };
 
     const renderOrder = useCallback(({ item }: { item: Order }) => (
@@ -37,9 +40,7 @@ export default function HistoryScreen() {
                     {statusEmoji(item.status)} {translateStatus(item.status)}
                 </Text>
                 <Text style={styles.date}>
-                    {item.completedAt
-                        ? new Date(item.completedAt).toLocaleDateString('ru-RU')
-                        : new Date(item.createdAt).toLocaleDateString('ru-RU')}
+                    {item.completedAt ? formatDate(item.completedAt) : formatDate(item.createdAt)}
                 </Text>
             </View>
             <View style={styles.route}>

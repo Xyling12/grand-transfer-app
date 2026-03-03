@@ -4,10 +4,12 @@ import {
     StyleSheet, RefreshControl, ActivityIndicator, Alert, Linking,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useAuth } from '../../stores/authStore';
 import { apiFetch } from '../../services/api';
 import { Colors, Spacing, Radius, FontSize } from '../../constants/Colors';
 import { translateTariff, translateStatus, statusColor, statusEmoji } from '../../utils/translations';
+import { formatDate } from '../../utils/dates';
 import type { Order } from '../../types';
 
 export default function OrdersScreen() {
@@ -33,6 +35,7 @@ export default function OrdersScreen() {
     }, [isDispatcher]);
 
     useEffect(() => { fetchOrders(); }, [fetchOrders]);
+    useFocusEffect(useCallback(() => { fetchOrders(); }, [fetchOrders]));
 
     const onRefresh = () => { setRefreshing(true); fetchOrders(); };
 
@@ -88,19 +91,19 @@ export default function OrdersScreen() {
                         <Text style={styles.detailLabel}>👥 Пассажиры</Text>
                         <Text style={styles.detailValue}>{item.passengers}</Text>
                     </View>
-                    {item.priceEstimate && (
+                    {!!item.priceEstimate && (
                         <View style={styles.detailRow}>
                             <Text style={styles.detailLabel}>💰 Цена</Text>
                             <Text style={[styles.detailValue, { color: Colors.primary }]}>{item.priceEstimate} ₽</Text>
                         </View>
                     )}
-                    {item.scheduledDate && (
+                    {!!item.scheduledDate && (
                         <View style={styles.detailRow}>
                             <Text style={styles.detailLabel}>📅 Дата</Text>
-                            <Text style={styles.detailValue}>{new Date(item.scheduledDate).toLocaleDateString('ru-RU')}</Text>
+                            <Text style={styles.detailValue}>{formatDate(item.scheduledDate)}</Text>
                         </View>
                     )}
-                    {item.comments && (
+                    {!!item.comments && (
                         <View style={styles.detailRow}>
                             <Text style={styles.detailLabel}>💬</Text>
                             <Text style={[styles.detailValue, { flex: 1 }]} numberOfLines={2}>{item.comments}</Text>

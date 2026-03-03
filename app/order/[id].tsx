@@ -3,11 +3,12 @@ import {
     View, Text, ScrollView, TouchableOpacity,
     StyleSheet, ActivityIndicator, Alert, Linking, TextInput, Modal,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useAuth } from '../../stores/authStore';
 import { apiFetch } from '../../services/api';
 import { Colors, Spacing, Radius, FontSize } from '../../constants/Colors';
 import { translateTariff, translateStatus, statusColor, statusEmoji } from '../../utils/translations';
+import { formatDate, formatDateTime } from '../../utils/dates';
 import type { Order } from '../../types';
 
 export default function OrderDetailScreen() {
@@ -15,6 +16,9 @@ export default function OrderDetailScreen() {
     const [order, setOrder] = useState<Order | null>(null);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
+    const [cancelModalVisible, setCancelModalVisible] = useState(false);
+    const [cancelReason, setCancelReason] = useState('');
+    const [distance, setDistance] = useState<string | null>(null);
     const { user } = useAuth();
     const router = useRouter();
     const isDispatcher = user?.role === 'DISPATCHER' || user?.role === 'ADMIN';
@@ -39,6 +43,27 @@ export default function OrderDetailScreen() {
             }
         })();
     }, [id]);
+
+    // Calculate route distance using Nominatim + OSRM (free APIs)
+    useEffect(() => {
+        if (!order) return;
+        (async () => {
+            try {
+                const [r1, r2] = await Promise.all([
+                    fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(order.fromCity)}&format=json&limit=1`),
+                    fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(order.toCity)}&format=json&limit=1`),
+                ]);
+                const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+                if (!d1[0] || !d2[0]) return;
+                const r3 = await fetch(`https://router.project-osrm.org/route/v1/driving/${d1[0].lon},${d1[0].lat};${d2[0].lon},${d2[0].lat}?overview=false`);
+                const d3 = await r3.json();
+                if (d3.routes?.[0]) {
+                    const km = Math.round(d3.routes[0].distance / 1000);
+                    setDistance(`${km} км`);
+                }
+            } catch { }
+        })();
+    }, [order]);
 
     const takeOrder = async () => {
         if (!order) return;
@@ -107,16 +132,27 @@ export default function OrderDetailScreen() {
 
     const isMine = order.driverId === user?.id;
     const showContacts = isMine || isDispatcher;
-    const canTake = order.status === 'NEW' || order.status === 'DISPATCHED';
-    const canDispatch = isDispatcher && order.status === 'NEW';
-    const canComplete = (isMine || isDispatcher) && (order.status === 'TAKEN' || order.status === 'DISPATCHED');
+    const canTake = !isDispatcher && (order.status === 'NEW' || order.status === 'DISPATCHED');
+    const canDispatch = isDispatcher && (order.status === 'NEW' || order.status === 'TAKEN');
+    // Только водитель (isMine) может завершить заказ — диспетчер не завершает
+    const canComplete = isMine && (order.status === 'TAKEN' || order.status === 'DISPATCHED');
     const canCancel = isDispatcher && order.status !== 'COMPLETED' && order.status !== 'CANCELLED';
 
-    const [cancelModalVisible, setCancelModalVisible] = useState(false);
-    const [cancelReason, setCancelReason] = useState('');
 
     return (
         <ScrollView style={styles.container} contentContainerStyle={styles.scroll}>
+            <Stack.Screen options={{
+                headerShown: true,
+                headerTitle: `Заказ #${order.id}`,
+                headerStyle: { backgroundColor: Colors.bg },
+                headerShadowVisible: false,
+                headerTintColor: Colors.text,
+                headerLeft: () => (
+                    <TouchableOpacity onPress={() => router.canGoBack() ? router.back() : router.replace('/(tabs)/orders')} style={{ paddingHorizontal: 8 }}>
+                        <Text style={{ color: Colors.primary, fontSize: 16, fontWeight: '600' }}>← Назад</Text>
+                    </TouchableOpacity>
+                ),
+            }} />
             {/* Status */}
             <View style={styles.statusRow}>
                 <View style={[styles.statusBadge, { backgroundColor: statusColor(order.status) + '20' }]}>
@@ -144,6 +180,15 @@ export default function OrderDetailScreen() {
                         <Text style={styles.routeCity}>{order.toCity}</Text>
                     </View>
                 </View>
+                {distance !== null && (
+                    <View style={[styles.routePoint, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: Colors.border }]}>
+                        <View style={[styles.dot, { backgroundColor: Colors.info }]} />
+                        <View style={{ flex: 1 }}>
+                            <Text style={styles.routeLabel}>Расстояние</Text>
+                            <Text style={[styles.routeCity, { color: Colors.info }]}>{distance}</Text>
+                        </View>
+                    </View>
+                )}
             </View>
 
             {/* Details */}
@@ -151,15 +196,27 @@ export default function OrderDetailScreen() {
                 <Text style={styles.sectionTitle}>Детали заказа</Text>
                 <DetailRow label="🏷 Тариф" value={translateTariff(order.tariff)} />
                 <DetailRow label="👥 Пассажиры" value={String(order.passengers)} />
-                {order.priceEstimate && (
-                    <DetailRow label="💰 Стоимость" value={`${order.priceEstimate} ₽`} highlight />
+                <DetailRow
+                    label="💰 Стоимость"
+                    value={order.priceEstimate ? `${order.priceEstimate} ₽` : 'Не указана'}
+                    highlight={!!order.priceEstimate}
+                />
+                <DetailRow
+                    label="📅 Дата поездки"
+                    value={order.scheduledDate ? formatDate(order.scheduledDate) : 'Не указана'}
+                />
+                <DetailRow label="🕐 Создан" value={formatDateTime(order.createdAt)} />
+                {!!order.completedAt && (
+                    <DetailRow label="✅ Выполнен" value={formatDateTime(order.completedAt)} />
                 )}
-                {order.scheduledDate && (
-                    <DetailRow label="📅 Дата" value={new Date(order.scheduledDate).toLocaleDateString('ru-RU')} />
+                {!!order.cancelledAt && (
+                    <DetailRow label="❌ Отменён" value={formatDateTime(order.cancelledAt)} />
                 )}
-                <DetailRow label="🕐 Создан" value={new Date(order.createdAt).toLocaleString('ru-RU')} />
-                {order.completedAt && (
-                    <DetailRow label="✅ Выполнен" value={new Date(order.completedAt).toLocaleString('ru-RU')} />
+                {!!order.cancelReason && (
+                    <View style={styles.commentsBlock}>
+                        <Text style={styles.commentsLabel}>📋 Причина отмены</Text>
+                        <Text style={[styles.commentsText, { color: Colors.danger }]}>{order.cancelReason}</Text>
+                    </View>
                 )}
                 {order.comments ? (
                     <View style={styles.commentsBlock}>
@@ -217,6 +274,26 @@ export default function OrderDetailScreen() {
                 <TouchableOpacity style={styles.mapButton} onPress={openMap}>
                     <Text style={styles.mapButtonText}>🗺 Посмотреть маршрут</Text>
                 </TouchableOpacity>
+
+                {/* Кнопка «Клиент» — только для диспетчера */}
+                {isDispatcher && showContacts && (
+                    <TouchableOpacity
+                        style={[styles.actionButton, { backgroundColor: Colors.info }]}
+                        onPress={() => Linking.openURL(`tel:${order.customerPhone}`)}
+                    >
+                        <Text style={styles.actionButtonText}>📞 Позвонить клиенту</Text>
+                    </TouchableOpacity>
+                )}
+
+                {/* Кнопка «Водитель» — позвонить водителю если назначен */}
+                {isDispatcher && order.driver?.phone && (
+                    <TouchableOpacity
+                        style={[styles.actionButton, { backgroundColor: Colors.info + 'cc' }]}
+                        onPress={() => Linking.openURL(`tel:${order.driver!.phone}`)}
+                    >
+                        <Text style={styles.actionButtonText}>🚗 Позвонить водителю</Text>
+                    </TouchableOpacity>
+                )}
 
                 {isMine && (
                     <TouchableOpacity style={styles.navButton} onPress={openNavigator}>

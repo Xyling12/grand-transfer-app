@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity,
-    StyleSheet, RefreshControl, ActivityIndicator, Alert, Linking,
+    View, Text, FlatList, TouchableOpacity, Modal, TextInput,
+    StyleSheet, RefreshControl, ActivityIndicator, Alert, Linking, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useAuth } from '../../stores/authStore';
 import { apiFetch } from '../../services/api';
 import { Colors, Spacing, Radius, FontSize } from '../../constants/Colors';
@@ -15,8 +16,11 @@ export default function MyOrdersScreen() {
     const [refreshing, setRefreshing] = useState(false);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState<number | null>(null);
+    const [cancelModalOrderId, setCancelModalOrderId] = useState<number | null>(null);
+    const [cancelReason, setCancelReason] = useState('');
     const { user } = useAuth();
     const router = useRouter();
+    const isDispatcher = user?.role === 'DISPATCHER' || user?.role === 'ADMIN';
 
     const fetchOrders = useCallback(async () => {
         try {
@@ -31,6 +35,7 @@ export default function MyOrdersScreen() {
     }, []);
 
     useEffect(() => { fetchOrders(); }, [fetchOrders]);
+    useFocusEffect(useCallback(() => { fetchOrders(); }, [fetchOrders]));
 
     const onRefresh = () => { setRefreshing(true); fetchOrders(); };
 
@@ -57,28 +62,68 @@ export default function MyOrdersScreen() {
         ]);
     };
 
+    const dispatchOrder = async (orderId: number) => {
+        setActionLoading(orderId);
+        try {
+            await apiFetch('/api/mobile/orders', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'dispatch', orderId }),
+            });
+            Alert.alert('📤', 'Заказ отправлен водителям');
+            fetchOrders();
+        } catch (err: any) {
+            Alert.alert('Ошибка', err.message);
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    // Открываем модалку причины для диспетчера, простое подтверждение для водителя
     const cancelOrder = async (orderId: number) => {
-        Alert.alert('❌ Отменить заказ?', 'Это действие нельзя отменить', [
-            { text: 'Нет' },
-            {
-                text: 'Да, отменить',
-                style: 'destructive',
-                onPress: async () => {
-                    setActionLoading(orderId);
-                    try {
-                        await apiFetch('/api/mobile/orders', {
-                            method: 'POST',
-                            body: JSON.stringify({ action: 'cancel', orderId }),
-                        });
-                        fetchOrders();
-                    } catch (err: any) {
-                        Alert.alert('Ошибка', err.message);
-                    } finally {
-                        setActionLoading(null);
-                    }
-                },
-            },
-        ]);
+        if (isDispatcher) {
+            setCancelReason('');
+            setCancelModalOrderId(orderId);
+            return;
+        }
+        const confirmed = Platform.OS === 'web'
+            ? window.confirm('Отменить заказ? Это действие нельзя отменить.')
+            : await new Promise<boolean>(resolve =>
+                Alert.alert('❌ Отменить заказ?', 'Это действие нельзя отменить', [
+                    { text: 'Нет', onPress: () => resolve(false) },
+                    { text: 'Да, отменить', style: 'destructive', onPress: () => resolve(true) },
+                ])
+            );
+        if (!confirmed) return;
+        setActionLoading(orderId);
+        try {
+            await apiFetch('/api/mobile/orders', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'cancel', orderId }),
+            });
+            fetchOrders();
+        } catch (err: any) {
+            Alert.alert('Ошибка', err.message);
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    const confirmCancelWithReason = async () => {
+        if (!cancelModalOrderId || !cancelReason.trim()) return;
+        setActionLoading(cancelModalOrderId);
+        setCancelModalOrderId(null);
+        try {
+            await apiFetch('/api/mobile/orders', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'cancel', orderId: cancelModalOrderId, reason: cancelReason.trim() }),
+            });
+            fetchOrders();
+        } catch (err: any) {
+            Alert.alert('Ошибка', err.message);
+        } finally {
+            setActionLoading(null);
+            setCancelReason('');
+        }
     };
 
     const renderOrder = useCallback(({ item }: { item: Order }) => (
@@ -103,7 +148,7 @@ export default function MyOrdersScreen() {
                     <Text style={styles.detailLabel}>🏷 Тариф</Text>
                     <Text style={styles.detailValue}>{translateTariff(item.tariff)}</Text>
                 </View>
-                {item.priceEstimate && (
+                {!!item.priceEstimate && (
                     <View style={styles.detailRow}>
                         <Text style={styles.detailLabel}>💰 Цена</Text>
                         <Text style={[styles.detailValue, { color: Colors.primary }]}>{item.priceEstimate} ₽</Text>
@@ -113,59 +158,130 @@ export default function MyOrdersScreen() {
                     <Text style={styles.detailLabel}>👤 Клиент</Text>
                     <Text style={styles.detailValue}>{item.customerName}</Text>
                 </View>
-                <TouchableOpacity style={styles.detailRow} onPress={() => Linking.openURL(`tel:${item.customerPhone}`)}>
+                <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>📞 Телефон</Text>
                     <Text style={[styles.detailValue, { color: Colors.info }]}>{item.customerPhone}</Text>
-                </TouchableOpacity>
+                </View>
             </View>
 
             {item.status === 'TAKEN' && (
                 <View style={styles.actions}>
-                    <TouchableOpacity
-                        style={styles.navBtn}
-                        onPress={() => Linking.openURL(`https://yandex.ru/navi/?rtext=${encodeURIComponent(item.fromCity)}~${encodeURIComponent(item.toCity)}&rtt=auto`)}
-                    >
-                        <Text style={styles.navText}>📱 Навигатор</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.completeBtn, actionLoading === item.id && { opacity: 0.6 }]}
-                        onPress={() => completeOrder(item.id)}
-                        disabled={actionLoading === item.id}
-                    >
-                        <Text style={styles.completeText}>✅ Выполнен</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.cancelBtn, actionLoading === item.id && { opacity: 0.6 }]}
-                        onPress={() => cancelOrder(item.id)}
-                        disabled={actionLoading === item.id}
-                    >
-                        <Text style={styles.cancelText}>❌</Text>
-                    </TouchableOpacity>
+                    {isDispatcher ? (
+                        // ─── Диспетчер ──────────────────────────────────────
+                        <>
+                            <TouchableOpacity
+                                style={styles.callBtn}
+                                onPress={() => Linking.openURL(`tel:${item.customerPhone}`)}
+                            >
+                                <Text style={styles.callText}>📞 Клиент</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.dispatchBtn, actionLoading === item.id && { opacity: 0.6 }]}
+                                onPress={() => dispatchOrder(item.id)}
+                                disabled={actionLoading === item.id}
+                            >
+                                <Text style={styles.dispatchText}>📤 Водителям</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.cancelBtn, actionLoading === item.id && { opacity: 0.6 }]}
+                                onPress={() => cancelOrder(item.id)}
+                                disabled={actionLoading === item.id}
+                            >
+                                <Text style={styles.cancelText}>❌</Text>
+                            </TouchableOpacity>
+                        </>
+                    ) : (
+                        // ─── Водитель ────────────────────────────────────────
+                        <>
+                            <TouchableOpacity
+                                style={styles.navBtn}
+                                onPress={() => Linking.openURL(`https://yandex.ru/navi/?rtext=${encodeURIComponent(item.fromCity)}~${encodeURIComponent(item.toCity)}&rtt=auto`)}
+                            >
+                                <Text style={styles.navText}>📱 Навигатор</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={styles.callBtn}
+                                onPress={() => Linking.openURL(`tel:${item.customerPhone}`)}
+                            >
+                                <Text style={styles.callText}>📞 Клиент</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.completeBtn, actionLoading === item.id && { opacity: 0.6 }]}
+                                onPress={() => completeOrder(item.id)}
+                                disabled={actionLoading === item.id}
+                            >
+                                <Text style={styles.completeText}>✅ Выполнен</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.cancelBtn, actionLoading === item.id && { opacity: 0.6 }]}
+                                onPress={() => cancelOrder(item.id)}
+                                disabled={actionLoading === item.id}
+                            >
+                                <Text style={styles.cancelText}>❌</Text>
+                            </TouchableOpacity>
+                        </>
+                    )}
                 </View>
             )}
         </TouchableOpacity>
-    ), [actionLoading]);
+    ), [actionLoading, isDispatcher]);
 
     if (loading) {
         return <View style={styles.centered}><ActivityIndicator size="large" color={Colors.primary} /></View>;
     }
 
     return (
-        <FlatList
-            data={orders}
-            renderItem={renderOrder}
-            keyExtractor={item => String(item.id)}
-            style={styles.list}
-            contentContainerStyle={orders.length === 0 ? styles.empty : styles.listContent}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
-            ListEmptyComponent={
-                <View style={styles.emptyWrap}>
-                    <Text style={styles.emptyEmoji}>🚗</Text>
-                    <Text style={styles.emptyText}>Нет активных заказов</Text>
-                    <Text style={styles.emptyHint}>Заберите заказ из доступных</Text>
+        <View style={{ flex: 1 }}>
+            <FlatList
+                data={orders}
+                renderItem={renderOrder}
+                keyExtractor={item => String(item.id)}
+                style={styles.list}
+                contentContainerStyle={orders.length === 0 ? styles.empty : styles.listContent}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
+                ListEmptyComponent={
+                    <View style={styles.emptyWrap}>
+                        <Text style={styles.emptyEmoji}>🚗</Text>
+                        <Text style={styles.emptyText}>Нет активных заказов</Text>
+                        <Text style={styles.emptyHint}>Заберите заказ из доступных</Text>
+                    </View>
+                }
+            />
+
+            {/* Модалка причины отмены (диспетчер) */}
+            <Modal visible={cancelModalOrderId !== null} transparent animationType="fade">
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalCard}>
+                        <Text style={styles.modalTitle}>Причина отмены</Text>
+                        <TextInput
+                            style={styles.modalInput}
+                            placeholder="Укажите причину..."
+                            placeholderTextColor={Colors.textMuted}
+                            value={cancelReason}
+                            onChangeText={setCancelReason}
+                            multiline
+                            numberOfLines={3}
+                            textAlignVertical="top"
+                        />
+                        <View style={styles.modalActions}>
+                            <TouchableOpacity
+                                style={styles.modalCancelBtn}
+                                onPress={() => { setCancelModalOrderId(null); setCancelReason(''); }}
+                            >
+                                <Text style={styles.modalCancelText}>Назад</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.modalConfirmBtn, !cancelReason.trim() && { opacity: 0.4 }]}
+                                disabled={!cancelReason.trim()}
+                                onPress={confirmCancelWithReason}
+                            >
+                                <Text style={styles.modalConfirmText}>Отменить заказ</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
                 </View>
-            }
-        />
+            </Modal>
+        </View>
     );
 }
 
@@ -192,8 +308,21 @@ const styles = StyleSheet.create({
     actions: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: Colors.border },
     navBtn: { flex: 1, padding: Spacing.lg, alignItems: 'center', borderRightWidth: 1, borderRightColor: Colors.border },
     navText: { color: Colors.info, fontSize: FontSize.sm, fontWeight: '600' },
+    callBtn: { flex: 1, padding: Spacing.lg, alignItems: 'center', borderRightWidth: 1, borderRightColor: Colors.border, backgroundColor: Colors.info + '10' },
+    callText: { color: Colors.info, fontSize: FontSize.sm, fontWeight: '600' },
+    dispatchBtn: { flex: 1, padding: Spacing.lg, alignItems: 'center', borderRightWidth: 1, borderRightColor: Colors.border, backgroundColor: Colors.primary + '15' },
+    dispatchText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: '700' },
     completeBtn: { flex: 1, padding: Spacing.lg, alignItems: 'center', backgroundColor: Colors.success + '15', borderRightWidth: 1, borderRightColor: Colors.border },
     completeText: { color: Colors.success, fontSize: FontSize.sm, fontWeight: '700' },
     cancelBtn: { padding: Spacing.lg, alignItems: 'center', width: 50 },
     cancelText: { fontSize: 16 },
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: Spacing.xl },
+    modalCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.xl, width: '100%' },
+    modalTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: Spacing.lg },
+    modalInput: { backgroundColor: Colors.bg, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, padding: Spacing.md, color: Colors.text, fontSize: FontSize.sm, minHeight: 80, marginBottom: Spacing.lg },
+    modalActions: { flexDirection: 'row', gap: Spacing.md },
+    modalCancelBtn: { flex: 1, padding: Spacing.md, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, alignItems: 'center' },
+    modalCancelText: { color: Colors.textSecondary, fontWeight: '600' },
+    modalConfirmBtn: { flex: 1, padding: Spacing.md, borderRadius: Radius.md, backgroundColor: Colors.danger, alignItems: 'center' },
+    modalConfirmText: { color: '#fff', fontWeight: '700' },
 });
